@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash([ ! -f \"$dir/package.json\" ])",
+      "Bash([ ! -f \"$dir/library.json\" ])",
+      "Bash([ ! -f \"$dir/library.properties\" ])",
+      "Bash(pio pkg *)",
+      "Bash(python3 -c \"import json; d=json.load\\(open\\('/c/Users/escob/.platformio/platforms/Seeed Studio/platform.json'\\)\\); [print\\(k,':',v.get\\('version','?'\\)\\) for k,v in d.get\\('packages',{}\\).items\\(\\)]\")"
+    ]
+  }
+}
