@@ -6,7 +6,14 @@
 LSM6DS3 imu(I2C_MODE, 0x6A);
 
 // ── FSR pins ─────────────────────────────────────────────────────────────────
-#define FSR_BIG_TOE 0   // A0 / D0
+#define FSR_BIG_TOE      0   // A0
+#define FSR_BALL_INNER   1   // A1
+#define FSR_BALL_OUTER   2   // A2
+#define FSR_MIDFOOT      3   // A3
+#define FSR_HEEL_MEDIAL  4   // A4
+#define FSR_HEEL_LATERAL 5   // A5
+
+#define FSR_MAX 3800   // clamp to avoid near-rail ADC distortion
 
 // ── Complementary filter ─────────────────────────────────────────────────────
 static const float ALPHA       = 0.98f;
@@ -20,7 +27,16 @@ uint32_t lastMs = 0;
 // ── BLE ───────────────────────────────────────────────────────────────────────
 // Service  : 19b10000-e8f2-537e-4f6c-d104768a1214
 // Char     : 19b10001-e8f2-537e-4f6c-d104768a1214
-// Packet   : 5 × int16 LE  →  pitch×100, roll×100, aZ×1000, bigToe, spare
+// Packet   : 9 × int16 LE (18 bytes)
+//   [0] pitch      × 100
+//   [1] roll       × 100
+//   [2] aZ         × 1000
+//   [3] bigToe
+//   [4] ballInner
+//   [5] ballOuter
+//   [6] midfoot
+//   [7] heelMedial
+//   [8] heelLateral
 const uint8_t SERVICE_UUID[] = {
   0x14, 0x12, 0x8a, 0x76, 0x04, 0xd1, 0x6c, 0x4f,
   0x7e, 0x53, 0xf2, 0xe8, 0x00, 0x00, 0xb1, 0x19
@@ -39,9 +55,9 @@ void startAdv() {
   Bluefruit.Advertising.addService(soleService);
   Bluefruit.ScanResponse.addName();
   Bluefruit.Advertising.restartOnDisconnect(true);
-  Bluefruit.Advertising.setInterval(32, 244);   // units of 0.625 ms
+  Bluefruit.Advertising.setInterval(32, 244);
   Bluefruit.Advertising.setFastTimeout(30);
-  Bluefruit.Advertising.start(0);               // 0 = advertise indefinitely
+  Bluefruit.Advertising.start(0);
 }
 
 // ── Calibration ───────────────────────────────────────────────────────────────
@@ -66,10 +82,8 @@ void calibrate() {
 // ── Setup ─────────────────────────────────────────────────────────────────────
 void setup() {
   Serial.begin(115200);
-  // Don't block if no USB host — wait max 2 s then continue
   for (uint32_t t = millis(); !Serial && (millis() - t < 2000);) {}
 
-  // IMU
   if (imu.begin() != 0) {
     Serial.println("IMU error!");
     while (1);
@@ -80,22 +94,21 @@ void setup() {
   pitch = 0.0f;
   roll  = 0.0f;
 
-  // BLE
   Bluefruit.begin();
-  Bluefruit.setTxPower(4);          // +4 dBm
+  Bluefruit.setTxPower(4);
   Bluefruit.setName("SoleMate");
 
   soleService.begin();
 
   soleChar.setProperties(CHR_PROPS_NOTIFY);
   soleChar.setPermission(SECMODE_OPEN, SECMODE_NO_ACCESS);
-  soleChar.setFixedLen(10);         // 5 × int16 = 10 bytes
+  soleChar.setFixedLen(18);   // 9 × int16 = 18 bytes
   soleChar.begin();
 
   startAdv();
 
   Serial.println("BLE advertising as 'SoleMate'");
-  Serial.println("pitch,roll,aZ,bigToe");
+  Serial.println("pitch,roll,aZ,bigToe,ballInner,ballOuter,midfoot,heelMedial,heelLateral");
   lastMs = millis();
 }
 
@@ -119,20 +132,31 @@ void loop() {
   pitch = ALPHA * (pitch + gX * dt) + (1.0f - ALPHA) * accelPitch;
   roll  = ALPHA * (roll  + gY * dt) + (1.0f - ALPHA) * accelRoll;
 
-  // FSR — clamp to 3800 to avoid ADC near-rail distortion
-  int bigToe = constrain(analogRead(FSR_BIG_TOE), 0, 3800);
+  // FSRs
+  int bigToe      = constrain(analogRead(FSR_BIG_TOE),      0, FSR_MAX);
+  int ballInner   = constrain(analogRead(FSR_BALL_INNER),   0, FSR_MAX);
+  int ballOuter   = constrain(analogRead(FSR_BALL_OUTER),   0, FSR_MAX);
+  int midfoot     = constrain(analogRead(FSR_MIDFOOT),      0, FSR_MAX);
+  int heelMedial  = constrain(analogRead(FSR_HEEL_MEDIAL),  0, FSR_MAX);
+  int heelLateral = constrain(analogRead(FSR_HEEL_LATERAL), 0, FSR_MAX);
 
-  // Serial (useful while USB is plugged in)
-  Serial.printf("%.2f,%.2f,%.3f,%d\n", pitch, roll, aZ, bigToe);
+  // Serial
+  Serial.printf("%.2f,%.2f,%.3f,%d,%d,%d,%d,%d,%d\n",
+    pitch, roll, aZ,
+    bigToe, ballInner, ballOuter, midfoot, heelMedial, heelLateral);
 
-  // BLE notify — only if a client is subscribed
+  // BLE notify
   if (Bluefruit.connected() && soleChar.notifyEnabled()) {
-    int16_t pkt[5];
+    int16_t pkt[9];
     pkt[0] = (int16_t)(pitch  * 100.0f);
     pkt[1] = (int16_t)(roll   * 100.0f);
     pkt[2] = (int16_t)(aZ     * 1000.0f);
     pkt[3] = (int16_t)bigToe;
-    pkt[4] = 0;   // spare — future FSR channels
+    pkt[4] = (int16_t)ballInner;
+    pkt[5] = (int16_t)ballOuter;
+    pkt[6] = (int16_t)midfoot;
+    pkt[7] = (int16_t)heelMedial;
+    pkt[8] = (int16_t)heelLateral;
     soleChar.notify((uint8_t*)pkt, sizeof(pkt));
   }
 }
